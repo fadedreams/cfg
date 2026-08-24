@@ -132,6 +132,46 @@ install_bashrc() {
     log "Installed ${dest}"
 }
 
+
+#── FZF & Friends ────────────────────────────────────────────────
+
+# Cross-distro installer for eza, bat, fd, fzf, ripgrep
+install_fzf_tools() {
+    echo "=== Installing eza, bat, fd, fzf, ripgrep ==="
+
+    if command -v apt &>/dev/null; then
+        sudo apt update
+        sudo apt install -y eza bat fd-find fzf ripgrep
+
+        # Debian/Ubuntu ship these under different binary names
+        mkdir -p ~/.local/bin
+        [ -x /usr/bin/batcat ] && [ ! -e ~/.local/bin/bat ] && ln -s "$(command -v batcat)" ~/.local/bin/bat
+        [ -x /usr/bin/fdfind ] && [ ! -e ~/.local/bin/fd ] && ln -s "$(command -v fdfind)" ~/.local/bin/fd
+
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y eza bat fd-find fzf ripgrep
+
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -Sy --needed eza bat fd fzf ripgrep
+
+    elif command -v apk &>/dev/null; then
+        sudo apk add eza bat fd fzf ripgrep
+
+    elif command -v brew &>/dev/null; then
+        brew install eza bat fd fzf ripgrep
+
+    else
+        echo "✗ No supported package manager found (apt/dnf/pacman/apk/brew)"
+        echo "  Falling back to fzf git install..."
+        git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
+        ~/.fzf/install --all
+        return
+    fi
+
+    echo "✓ Done. Restart your shell or run 'reload'."
+}
+
+
 main() {
     pick_downloader
 
@@ -141,6 +181,8 @@ main() {
     install_tmux_conf
     install_vimrc
     install_bashrc
+
+    install_fzf_tools
 
     log "Done."
     log "Start a new shell (or run: exec bash) and 'tmux' to pick everything up."
