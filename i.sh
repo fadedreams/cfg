@@ -9,13 +9,15 @@
 #
 # What it does:
 #   - Installs tmux and vim via the right package manager for your distro
-#   - Downloads .tmux.conf, .vimrc, .bashrc from github.com/fadedreams/cfg
+#   - Downloads .tmux.conf, .vimrc, .bashrc from their respective repos
 #   - Backs up any existing dotfiles to <file>.bak.<timestamp>
 #   - Safe to re-run (idempotent)
 
 set -euo pipefail
 
-RAW_BASE="https://raw.githubusercontent.com/fadedreams/cfg/refs/heads/main"
+TMUX_CONF_URL="https://raw.githubusercontent.com/fadedreams/tmux/refs/heads/main/tmux.conf"
+VIMRC_URL="https://raw.githubusercontent.com/fadedreams/vimrc/refs/heads/main/.vimrc"
+BASHRC_URL="https://raw.githubusercontent.com/fadedreams/bashrc/refs/heads/main/.bashrc"
 
 log()  { printf '\033[1;32m[+] %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*"; }
@@ -112,21 +114,21 @@ ensure_installed() { # ensure_installed <bin> <pkg>
 install_tmux_conf() {
     local dest="${HOME}/.tmux.conf"
     backup_if_exists "$dest"
-    fetch "${RAW_BASE}/tmux.conf" "$dest"
+    fetch "${TMUX_CONF_URL}" "$dest"
     log "Installed ${dest}"
 }
 
 install_vimrc() {
     local dest="${HOME}/.vimrc"
     backup_if_exists "$dest"
-    fetch "${RAW_BASE}/.vimrc" "$dest"
+    fetch "${VIMRC_URL}" "$dest"
     log "Installed ${dest}"
 }
 
 install_bashrc() {
     local dest="${HOME}/.bashrc"
     backup_if_exists "$dest"
-    fetch "${RAW_BASE}/.bashrc" "$dest"
+    fetch "${BASHRC_URL}" "$dest"
     log "Installed ${dest}"
 }
 
