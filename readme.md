@@ -3,5 +3,5 @@ bash <(curl -fsSL https://raw.githubusercontent.com/fadedreams/cfg/refs/heads/ma
 ```
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/fadedreams/cfg/refs/heads/main/b.sh) && source ~/.bashrc
+bash <(curl -fsSL https://raw.githubusercontent.com/fadedreams/cfg/refs/heads/main/b.sh)
 ```
