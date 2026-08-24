@@ -15,6 +15,9 @@
 
 set -euo pipefail
 
+# Fully non-interactive apt installs (no debconf prompts, no confirmation)
+export DEBIAN_FRONTEND=noninteractive
+
 TMUX_CONF_URL="https://raw.githubusercontent.com/fadedreams/tmux/refs/heads/main/tmux.conf"
 VIMRC_URL="https://raw.githubusercontent.com/fadedreams/vimrc/refs/heads/main/.vimrc"
 BASHRC_URL="https://raw.githubusercontent.com/fadedreams/bashrc/refs/heads/main/.bashrc"
@@ -68,20 +71,19 @@ backup_if_exists() { # backup_if_exists <path>
 install_pkg() { # install_pkg <pkg-name>
     local pkg="$1"
     if command -v apt-get >/dev/null 2>&1; then
-        $SUDO apt-get update -y
         $SUDO apt-get install -y "$pkg"
     elif command -v dnf >/dev/null 2>&1; then
         $SUDO dnf install -y "$pkg"
     elif command -v yum >/dev/null 2>&1; then
         $SUDO yum install -y "$pkg"
     elif command -v pacman >/dev/null 2>&1; then
-        $SUDO pacman -Sy --noconfirm --needed "$pkg"
+        $SUDO pacman -S --noconfirm --needed "$pkg"
     elif command -v zypper >/dev/null 2>&1; then
         $SUDO zypper --non-interactive install "$pkg"
     elif command -v apk >/dev/null 2>&1; then
         $SUDO apk add --no-cache "$pkg"
     elif command -v xbps-install >/dev/null 2>&1; then
-        $SUDO xbps-install -Sy "$pkg"
+        $SUDO xbps-install -y "$pkg"
     elif command -v emerge >/dev/null 2>&1; then
         $SUDO emerge --ask=n "$pkg" || $SUDO emerge "$pkg"
     elif command -v eopkg >/dev/null 2>&1; then
@@ -140,7 +142,6 @@ install_fzf_tools() {
     echo "=== Installing eza, bat, fd, fzf, ripgrep ==="
 
     if command -v apt &>/dev/null; then
-        sudo apt update
         sudo apt install -y eza bat fd-find fzf ripgrep
 
         # Debian/Ubuntu ship these under different binary names
@@ -152,7 +153,7 @@ install_fzf_tools() {
         sudo dnf install -y eza bat fd-find fzf ripgrep
 
     elif command -v pacman &>/dev/null; then
-        sudo pacman -Sy --needed eza bat fd fzf ripgrep
+        sudo pacman -S --needed --noconfirm eza bat fd fzf ripgrep
 
     elif command -v apk &>/dev/null; then
         sudo apk add eza bat fd fzf ripgrep

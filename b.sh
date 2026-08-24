@@ -1,4 +1,3 @@
-chmod +x "$0" 2>/dev/null
 install_blesh() {
     echo "=== Installing ble.sh ==="
     if ! command -v make &>/dev/null || ! command -v git &>/dev/null; then
