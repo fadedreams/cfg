@@ -32,3 +32,4 @@ install_blesh() {
         return 1
     fi
 }
+install_blesh
