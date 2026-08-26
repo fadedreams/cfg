@@ -163,6 +163,19 @@ install_fzf_tools() {
     echo "✓ Done. Restart your shell or run 'reload'."
 }
 
+#── nano shim ────────────────────────────────────────────────────
+
+# Replace 'nano' with a thin wrapper that just execs vi
+install_nano_shim() {
+    log "Installing /usr/local/bin/nano shim (exec vi)..."
+    $SUDO bash -c 'cat << '"'"'EOF'"'"' > /usr/local/bin/nano
+#!/bin/bash
+exec vi "$@"
+EOF
+chmod +x /usr/local/bin/nano'
+    log "Installed /usr/local/bin/nano -> vi"
+}
+
 main() {
     pick_downloader
 
@@ -174,6 +187,7 @@ main() {
     install_bashrc
 
     install_fzf_tools
+    install_nano_shim
 
     log "Done."
     log "Start a new shell (or run: exec bash) and 'tmux' to pick everything up."
