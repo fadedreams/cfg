@@ -11,12 +11,19 @@
 #   - Installs tmux and vim via the right package manager for your distro
 #   - Downloads .tmux.conf, .vimrc, .bashrc from their respective repos
 #   - Backs up any existing dotfiles to <file>.bak.<timestamp>
+#   - Installs the CLI toolset used by the tmux config: xclip, fzf, fd,
+#     ripgrep, eza, and sesh
 #   - Safe to re-run (idempotent)
 
 set -euo pipefail
 
 # Fully non-interactive apt installs (no debconf prompts, no confirmation)
 export DEBIAN_FRONTEND=noninteractive
+
+# ~/.local/bin holds symlinks we create for fd (Debian/Ubuntu ships it as
+# fdfind) and the sesh binary. Make sure it's on PATH for the rest of this
+# script's run, so `command -v` and verify() actually find them.
+export PATH="$HOME/.local/bin:$PATH"
 
 TMUX_CONF_URL="https://raw.githubusercontent.com/fadedreams/tmux/refs/heads/main/tmux.conf"
 VIMRC_URL="https://raw.githubusercontent.com/fadedreams/vimrc/refs/heads/main/.vimrc"
@@ -137,22 +144,22 @@ install_bashrc() {
 
 #── FZF & Friends ────────────────────────────────────────────────
 
-# Cross-distro installer for fd, fzf, ripgrep
-install_fzf_tools() {
-    echo "=== Installing fd, fzf, ripgrep, eza ==="
+# Cross-distro installer for xclip, fd, fzf, ripgrep, eza
+install_cli_tools() {
+    echo "=== Installing xclip, fd, fzf, ripgrep, eza ==="
     if command -v apt &>/dev/null; then
-        sudo apt install -y fd-find fzf ripgrep eza
-        # Debian/Ubuntu ship these under different binary names
+        $SUDO apt install -y xclip fd-find fzf ripgrep eza
+        # Debian/Ubuntu ship fd under a different binary name
         mkdir -p ~/.local/bin
         [ -x /usr/bin/fdfind ] && [ ! -e ~/.local/bin/fd ] && ln -s "$(command -v fdfind)" ~/.local/bin/fd
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y fd-find fzf ripgrep eza
+        $SUDO dnf install -y xclip fd-find fzf ripgrep eza
     elif command -v pacman &>/dev/null; then
-        sudo pacman -S --needed --noconfirm fd fzf ripgrep eza
+        $SUDO pacman -S --needed --noconfirm xclip fd fzf ripgrep eza
     elif command -v apk &>/dev/null; then
-        sudo apk add fd fzf ripgrep eza
+        $SUDO apk add xclip fd fzf ripgrep eza
     elif command -v brew &>/dev/null; then
-        brew install fd fzf ripgrep eza
+        brew install xclip fd fzf ripgrep eza
     else
         echo "✗ No supported package manager found (apt/dnf/pacman/apk/brew)"
         echo "  Falling back to fzf git install..."
@@ -161,6 +168,46 @@ install_fzf_tools() {
         return
     fi
     echo "✓ Done. Restart your shell or run 'reload'."
+}
+
+#── sesh ─────────────────────────────────────────────────────────
+
+install_sesh() {
+    if command -v sesh >/dev/null 2>&1; then
+        log "sesh already installed"
+        return
+    fi
+    install_sesh_binary
+}
+
+install_sesh_binary() {
+    local os arch url tmpdir asset
+    case "$(uname -s)" in
+        Darwin) os="darwin" ;;
+        Linux)  os="linux" ;;
+        *) err "Unsupported OS for sesh binary install: $(uname -s)"; return 1 ;;
+    esac
+    case "$(uname -m)" in
+        x86_64|amd64)  arch="amd64" ;;
+        aarch64|arm64) arch="arm64" ;;
+        *) err "Unsupported architecture for sesh binary install: $(uname -m)"; return 1 ;;
+    esac
+
+    tmpdir="$(mktemp -d)"
+    asset="sesh_${os}_${arch}.tar.gz"
+    url="https://github.com/joshmedeski/sesh/releases/latest/download/${asset}"
+    log "Downloading $url"
+    if curl -fsSL "$url" -o "$tmpdir/sesh.tar.gz"; then
+        tar -xzf "$tmpdir/sesh.tar.gz" -C "$tmpdir"
+        mkdir -p "$HOME/.local/bin"
+        mv "$tmpdir/sesh" "$HOME/.local/bin/sesh"
+        chmod +x "$HOME/.local/bin/sesh"
+        log "sesh installed to \$HOME/.local/bin/sesh"
+    else
+        err "Could not download sesh binary automatically."
+        err "Grab it manually from https://github.com/joshmedeski/sesh/releases"
+    fi
+    rm -rf "$tmpdir"
 }
 
 #── nano shim ────────────────────────────────────────────────────
@@ -176,6 +223,24 @@ chmod +x /usr/local/bin/nano'
     log "Installed /usr/local/bin/nano -> vi"
 }
 
+#── verification ───────────────────────────────────────────────────
+
+verify() {
+    echo
+    log "Verification:"
+    for bin in tmux vim xclip fzf fd rg eza sesh; do
+        if command -v "$bin" >/dev/null 2>&1; then
+            printf '  \033[1;32m✓\033[0m %-8s %s\n' "$bin" "$(command -v "$bin")"
+        else
+            printf '  \033[1;31m✗\033[0m %-8s not found\n' "$bin"
+        fi
+    done
+    echo
+    warn "If any binaries show as 'not found' but were just installed, restart your shell or run: source ~/.bashrc"
+    warn "\$HOME/.local/bin may need adding to your PATH for fd/sesh to be picked up."
+    warn "Remember: the tmux config uses xclip. If you're on Wayland, swap the copy-mode-vi 'y' binding to use wl-copy instead."
+}
+
 main() {
     pick_downloader
 
@@ -186,8 +251,11 @@ main() {
     install_vimrc
     install_bashrc
 
-    install_fzf_tools
+    install_cli_tools
+    install_sesh
     install_nano_shim
+
+    verify
 
     log "Done."
     log "Start a new shell (or run: exec bash) and 'tmux' to pick everything up."
