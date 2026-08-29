@@ -207,12 +207,12 @@ install_sesh() {
 install_sesh_binary() {
     local os arch url tmpdir asset
     case "$(uname -s)" in
-        Darwin) os="darwin" ;;
-        Linux)  os="linux" ;;
+        Darwin) os="Darwin" ;;
+        Linux)  os="Linux" ;;
         *) err "Unsupported OS for sesh binary install: $(uname -s)"; return 1 ;;
     esac
     case "$(uname -m)" in
-        x86_64|amd64)  arch="amd64" ;;
+        x86_64|amd64)  arch="x86_64" ;;
         aarch64|arm64) arch="arm64" ;;
         *) err "Unsupported architecture for sesh binary install: $(uname -m)"; return 1 ;;
     esac
@@ -233,7 +233,6 @@ install_sesh_binary() {
     fi
     rm -rf "$tmpdir"
 }
-
 #── nano shim ────────────────────────────────────────────────────
 
 # Replace 'nano' with a thin wrapper that just execs vi
