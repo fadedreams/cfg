@@ -53,7 +53,7 @@ pick_downloader() {
         DOWNLOADER="wget"
     else
         warn "Neither curl nor wget found; attempting to install curl..."
-        install_pkg curl git
+        install_pkg curl
         DOWNLOADER="curl"
     fi
 }
@@ -268,6 +268,7 @@ verify() {
 main() {
     pick_downloader
 
+    ensure_installed git git
     ensure_installed tmux tmux
     ensure_installed vim vim
 
