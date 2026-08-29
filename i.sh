@@ -127,6 +127,30 @@ install_tmux_conf() {
     log "Installed ${dest}"
 }
 
+#── tmux plugins (TPM) ───────────────────────────────────────────
+TPM_DIR="${HOME}/.tmux/plugins/tpm"
+install_tpm() {
+    if [ -d "$TPM_DIR" ]; then
+        log "TPM already installed, updating..."
+        git -C "$TPM_DIR" pull --ff-only >/dev/null 2>&1 || warn "Could not update TPM (non-fatal)"
+    else
+        log "Installing TPM (tmux plugin manager)..."
+        git clone --depth 1 https://github.com/tmux-plugins/tpm "$TPM_DIR"
+    fi
+}
+install_tmux_plugins() {
+    install_tpm
+
+    # TPM ships a headless installer script that doesn't need a running
+    # tmux session or the prefix+I keypress — perfect for a bootstrap script.
+    if [ -x "${TPM_DIR}/bin/install_plugins" ]; then
+        log "Installing tmux plugins listed in ~/.tmux.conf..."
+        "${TPM_DIR}/bin/install_plugins" || warn "Some tmux plugins may have failed to install"
+    else
+        err "TPM install script not found at ${TPM_DIR}/bin/install_plugins"
+    fi
+}
+
 install_vimrc() {
     local dest="${HOME}/.vimrc"
     backup_if_exists "$dest"
