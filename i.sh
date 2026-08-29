@@ -272,6 +272,7 @@ main() {
     ensure_installed vim vim
 
     install_tmux_conf
+    install_tmux_plugins
     install_vimrc
     install_bashrc
 
@@ -284,5 +285,4 @@ main() {
     log "Done."
     log "Start a new shell (or run: exec bash) and 'tmux' to pick everything up."
 }
-
 main "$@"
