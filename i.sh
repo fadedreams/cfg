@@ -53,7 +53,7 @@ pick_downloader() {
         DOWNLOADER="wget"
     else
         warn "Neither curl nor wget found; attempting to install curl..."
-        install_pkg curl
+        install_pkg curl git
         DOWNLOADER="curl"
     fi
 }
