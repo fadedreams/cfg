@@ -246,6 +246,35 @@ chmod +x /usr/local/bin/nano'
     log "Installed /usr/local/bin/nano -> vi"
 }
 
+#── default editor ────────────────────────────────────────────────
+set_default_editor() {
+    if command -v update-alternatives >/dev/null 2>&1; then
+        # Debian/Ubuntu: package may register vim as vim.basic, vim.tiny, or plain vim
+        local vim_alt
+        vim_alt="$(update-alternatives --list editor 2>/dev/null | grep -E '/vim(\.basic|\.tiny)?$' | head -n1)"
+        if [ -n "$vim_alt" ]; then
+            $SUDO update-alternatives --set editor "$vim_alt"
+            log "Set default editor to $vim_alt (update-alternatives)"
+        else
+            warn "No vim alternative registered for 'editor'; skipping update-alternatives"
+        fi
+    elif command -v alternatives >/dev/null 2>&1; then
+        # RHEL/Fedora/CentOS use 'alternatives' instead of 'update-alternatives'
+        local vim_bin
+        vim_bin="$(command -v vim || true)"
+        if [ -n "$vim_bin" ] && alternatives --list 2>/dev/null | grep -q '^editor'; then
+            $SUDO alternatives --set editor "$vim_bin"
+            log "Set default editor to $vim_bin (alternatives)"
+        else
+            warn "No 'editor' alternative found via alternatives; skipping"
+        fi
+    else
+        # Arch, Alpine, and others have no alternatives system for 'editor'
+        warn "No alternatives system found for this distro; not setting a system-wide editor"
+        warn "Relying on EDITOR/VISUAL in ~/.bashrc instead"
+    fi
+}
+
 #── verification ───────────────────────────────────────────────────
 
 verify() {
@@ -279,6 +308,7 @@ main() {
     install_cli_tools
     install_sesh
     install_nano_shim
+    set_default_editor
 
     verify
 
