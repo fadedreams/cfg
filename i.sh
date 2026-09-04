@@ -12,7 +12,7 @@
 #   - Downloads .tmux.conf, .vimrc, .bashrc from their respective repos
 #   - Backs up any existing dotfiles to <file>.bak.<timestamp>
 #   - Installs the CLI toolset used by the tmux config: xclip, fzf, fd,
-#     ripgrep, eza, and sesh
+#     ripgrep and sesh
 #   - Safe to re-run (idempotent)
 
 set -euo pipefail
@@ -280,7 +280,7 @@ set_default_editor() {
 verify() {
     echo
     log "Verification:"
-    for bin in tmux vim xclip fzf fd rg eza sesh; do
+    for bin in tmux vim xclip fzf fd rg sesh; do
         if command -v "$bin" >/dev/null 2>&1; then
             printf '  \033[1;32m✓\033[0m %-8s %s\n' "$bin" "$(command -v "$bin")"
         else
