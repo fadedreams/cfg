@@ -168,22 +168,22 @@ install_bashrc() {
 
 #── FZF & Friends ────────────────────────────────────────────────
 
-# Cross-distro installer for xclip, fd, fzf, ripgrep, eza
+# Cross-distro installer for xclip, fd, fzf, ripgrep
 install_cli_tools() {
-    echo "=== Installing xclip, fd, fzf, ripgrep, eza ==="
+    echo "=== Installing xclip, fd, fzf, ripgrep"
     if command -v apt &>/dev/null; then
-        $SUDO apt install -y xclip fd-find fzf ripgrep eza
+        $SUDO apt install -y xclip fd-find fzf ripgrep
         # Debian/Ubuntu ship fd under a different binary name
         mkdir -p ~/.local/bin
         [ -x /usr/bin/fdfind ] && [ ! -e ~/.local/bin/fd ] && ln -s "$(command -v fdfind)" ~/.local/bin/fd
     elif command -v dnf &>/dev/null; then
-        $SUDO dnf install -y xclip fd-find fzf ripgrep eza
+        $SUDO dnf install -y xclip fd-find fzf ripgrep
     elif command -v pacman &>/dev/null; then
-        $SUDO pacman -S --needed --noconfirm xclip fd fzf ripgrep eza
+        $SUDO pacman -S --needed --noconfirm xclip fd fzf ripgrep
     elif command -v apk &>/dev/null; then
-        $SUDO apk add xclip fd fzf ripgrep eza
+        $SUDO apk add xclip fd fzf ripgrep
     elif command -v brew &>/dev/null; then
-        brew install xclip fd fzf ripgrep eza
+        brew install xclip fd fzf ripgrep
     else
         echo "✗ No supported package manager found (apt/dnf/pacman/apk/brew)"
         echo "  Falling back to fzf git install..."
