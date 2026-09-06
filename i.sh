@@ -275,6 +275,18 @@ set_default_editor() {
     fi
 }
 
+#── vim colorscheme ─────────────────────────────────────────────
+install_habamax_colorscheme() {
+    local dest="${HOME}/.vim/colors/habamax.vim"
+    if [ -f "$dest" ]; then
+        log "habamax colorscheme already installed"
+        return
+    fi
+    mkdir -p "${HOME}/.vim/colors"
+    fetch "https://raw.githubusercontent.com/vim/colorschemes/master/colors/habamax.vim" "$dest"
+    log "Installed ${dest}"
+}
+
 #── verification ───────────────────────────────────────────────────
 
 verify() {
@@ -287,6 +299,11 @@ verify() {
             printf '  \033[1;31m✗\033[0m %-8s not found\n' "$bin"
         fi
     done
+    if [ -f "${HOME}/.vim/colors/habamax.vim" ]; then
+        printf '  \033[1;32m✓\033[0m %-8s %s\n' "habamax" "${HOME}/.vim/colors/habamax.vim"
+    else
+        printf '  \033[1;31m✗\033[0m %-8s not found\n' "habamax"
+    fi
     echo
     warn "If any binaries show as 'not found' but were just installed, restart your shell or run: source ~/.bashrc"
     warn "\$HOME/.local/bin may need adding to your PATH for fd/sesh to be picked up."
@@ -303,6 +320,7 @@ main() {
     install_tmux_conf
     install_tmux_plugins
     install_vimrc
+    install_habamax_colorscheme
     install_bashrc
 
     install_cli_tools
