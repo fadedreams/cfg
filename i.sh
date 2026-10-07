@@ -11,8 +11,8 @@
 #   - Installs tmux and vim via the right package manager for your distro
 #   - Downloads .tmux.conf, .vimrc, .bashrc from their respective repos
 #   - Backs up any existing dotfiles to <file>.bak.<timestamp>
-#   - Installs the CLI toolset used by the tmux config: xclip, fzf, fd,
-#     ripgrep and sesh
+#   - Installs the CLI toolset used by the tmux/vim config: xclip, fzf, fd,
+#     ripgrep and sesh (package manager first, GitHub release binary as fallback)
 #   - Safe to re-run (idempotent)
 
 set -euo pipefail
@@ -20,10 +20,9 @@ set -euo pipefail
 # Fully non-interactive apt installs (no debconf prompts, no confirmation)
 export DEBIAN_FRONTEND=noninteractive
 
-# ~/.local/bin holds symlinks we create for fd (Debian/Ubuntu ships it as
-# fdfind) and the sesh binary. Make sure it's on PATH for the rest of this
-# script's run, so `command -v` and verify() actually find them.
-export PATH="$HOME/.local/bin:$PATH"
+# ~/.local/bin holds the sesh binary. Make sure it's on PATH for the rest of
+# this script's run, so `command -v` and verify() actually find it.
+export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 TMUX_CONF_URL="https://raw.githubusercontent.com/fadedreams/tmux/refs/heads/main/tmux.conf"
 VIMRC_URL="https://raw.githubusercontent.com/fadedreams/vimrc/refs/heads/main/.vimrc"
@@ -43,6 +42,61 @@ if [ "$(id -u)" -ne 0 ]; then
         exit 1
     fi
 fi
+
+# ---- package manager detection ------------------------------------------
+PM=""
+detect_pm() {
+    local pm
+    for pm in apt-get dnf yum pacman zypper apk xbps-install emerge eopkg nix-env brew; do
+        if command -v "$pm" >/dev/null 2>&1; then
+            PM="$pm"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Install one or more packages with the detected package manager.
+# Returns non-zero on failure (does not exit), so callers can fall back.
+_pm_install() { # _pm_install <pkg>...
+    [ -n "$PM" ] || detect_pm || return 1
+    case "$PM" in
+        apt-get)      $SUDO apt-get install -y "$@" ;;
+        dnf)          $SUDO dnf install -y "$@" ;;
+        yum)          $SUDO yum install -y "$@" ;;
+        pacman)       $SUDO pacman -S --noconfirm --needed "$@" ;;
+        zypper)       $SUDO zypper --non-interactive install "$@" ;;
+        apk)          $SUDO apk add --no-cache "$@" ;;
+        xbps-install) $SUDO xbps-install -y "$@" ;;
+        emerge)       $SUDO emerge --ask=n "$@" ;;
+        eopkg)        $SUDO eopkg install -y "$@" ;;
+        nix-env)      nix-env -iA $(printf 'nixpkgs.%s ' "$@") ;;
+        brew)         brew install "$@" ;;
+        *)            return 1 ;;
+    esac
+}
+
+# Same, but aborts the script on failure (used for essentials like git/tmux/vim)
+install_pkg() { # install_pkg <pkg-name>
+    if ! _pm_install "$@"; then
+        err "Could not install '$*' (package manager: ${PM:-none detected})."
+        exit 1
+    fi
+}
+
+# Map a tool name to the package name used by the current package manager.
+tool_pkg() { # tool_pkg <xclip|fd|fzf|rg>
+    case "$1:$PM" in
+        xclip:emerge)        echo "x11-misc/xclip" ;;
+        fd:apt-get)          echo "fd-find" ;;
+        fd:dnf|fd:yum)       echo "fd-find" ;;
+        fd:emerge)           echo "sys-apps/fd" ;;
+        fzf:emerge)          echo "app-shells/fzf" ;;
+        rg:emerge)           echo "sys-apps/ripgrep" ;;
+        rg:*)                echo "ripgrep" ;;
+        *)                   echo "$1" ;;
+    esac
+}
 
 # ---- downloader helper -------------------------------------------------
 DOWNLOADER=""
@@ -71,35 +125,6 @@ backup_if_exists() { # backup_if_exists <path>
         local b="${1}.bak.$(date +%Y%m%d%H%M%S)"
         warn "Existing $1 found. Backing up to $b"
         cp "$1" "$b"
-    fi
-}
-
-# ---- generic package install across distros ----------------------------
-install_pkg() { # install_pkg <pkg-name>
-    local pkg="$1"
-    if command -v apt-get >/dev/null 2>&1; then
-        $SUDO apt-get install -y "$pkg"
-    elif command -v dnf >/dev/null 2>&1; then
-        $SUDO dnf install -y "$pkg"
-    elif command -v yum >/dev/null 2>&1; then
-        $SUDO yum install -y "$pkg"
-    elif command -v pacman >/dev/null 2>&1; then
-        $SUDO pacman -S --noconfirm --needed "$pkg"
-    elif command -v zypper >/dev/null 2>&1; then
-        $SUDO zypper --non-interactive install "$pkg"
-    elif command -v apk >/dev/null 2>&1; then
-        $SUDO apk add --no-cache "$pkg"
-    elif command -v xbps-install >/dev/null 2>&1; then
-        $SUDO xbps-install -y "$pkg"
-    elif command -v emerge >/dev/null 2>&1; then
-        $SUDO emerge --ask=n "$pkg" || $SUDO emerge "$pkg"
-    elif command -v eopkg >/dev/null 2>&1; then
-        $SUDO eopkg install -y "$pkg"
-    elif command -v nix-env >/dev/null 2>&1; then
-        nix-env -iA "nixpkgs.${pkg}"
-    else
-        err "Could not detect a supported package manager for '$pkg'."
-        exit 1
     fi
 }
 
@@ -167,31 +192,118 @@ install_bashrc() {
 
 
 #── FZF & Friends ────────────────────────────────────────────────
+#
+# Strategy for xclip, fd, fzf, ripgrep (each handled independently so one
+# missing package never blocks the others):
+#   1. Install from the distro's package manager (apt, dnf, yum, pacman,
+#      zypper, apk, xbps, emerge, eopkg, nix, brew)
+#   2. Fix up Debian/Ubuntu's `fdfind` -> `fd` naming
+#   3. For anything still missing (old/minimal distros, RHEL without EPEL,
+#      unknown package managers), download the official GitHub release binary
 
-# Cross-distro installer for xclip, fd, fzf, ripgrep
-install_cli_tools() {
-    echo "=== Installing xclip, fd, fzf, ripgrep"
-    if command -v apt &>/dev/null; then
-        $SUDO apt install -y xclip fd-find fzf ripgrep
-        # Debian/Ubuntu ship fd under a different binary name
-        mkdir -p ~/.local/bin
-        [ -x /usr/bin/fdfind ] && [ ! -e ~/.local/bin/fd ] && ln -s "$(command -v fdfind)" ~/.local/bin/fd
-    elif command -v dnf &>/dev/null; then
-        $SUDO dnf install -y xclip fd-find fzf ripgrep
-    elif command -v pacman &>/dev/null; then
-        $SUDO pacman -S --needed --noconfirm xclip fd fzf ripgrep
-    elif command -v apk &>/dev/null; then
-        $SUDO apk add xclip fd fzf ripgrep
-    elif command -v brew &>/dev/null; then
-        brew install xclip fd fzf ripgrep
-    else
-        echo "✗ No supported package manager found (apt/dnf/pacman/apk/brew)"
-        echo "  Falling back to fzf git install..."
-        git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
-        ~/.fzf/install --all
-        return
+# Prints the latest release version of a GitHub repo (without a leading "v"),
+# or the given fallback version if the API is unreachable / rate-limited.
+github_latest() { # github_latest <owner/repo> <fallback>
+    local v="" tmp
+    tmp="$(mktemp)"
+    if fetch "https://api.github.com/repos/$1/releases/latest" "$tmp" 2>/dev/null; then
+        v="$(grep -m1 '"tag_name"' "$tmp" | sed -E 's/.*"v?([^"]+)".*/\1/' || true)"
     fi
-    echo "✓ Done. Restart your shell or run 'reload'."
+    rm -f "$tmp"
+    echo "${v:-$2}"
+}
+
+# Download a .tar.gz, find <bin> inside it, and install to /usr/local/bin
+install_release_binary() { # install_release_binary <bin> <url>
+    local bin="$1" url="$2" tmp found
+    tmp="$(mktemp -d)"
+    log "Downloading $url"
+    if fetch "$url" "$tmp/a.tar.gz" && tar -xzf "$tmp/a.tar.gz" -C "$tmp"; then
+        found="$(find "$tmp" -type f -name "$bin" | head -n1)"
+        if [ -n "$found" ]; then
+            $SUDO mkdir -p /usr/local/bin
+            $SUDO install -m 0755 "$found" "/usr/local/bin/$bin"
+            rm -rf "$tmp"
+            log "$bin installed to /usr/local/bin/$bin"
+            return 0
+        fi
+    fi
+    rm -rf "$tmp"
+    return 1
+}
+
+# Fallback installers: GitHub release binaries (Linux x86_64 / arm64)
+install_fallback_binary() { # install_fallback_binary <fzf|rg|fd>
+    local tool="$1" arch_gnu arch_go libc v
+    case "$(uname -m)" in
+        x86_64|amd64)  arch_gnu="x86_64";  arch_go="amd64"; libc="musl" ;;
+        aarch64|arm64) arch_gnu="aarch64"; arch_go="arm64"; libc="gnu"  ;;
+        *) warn "No prebuilt $tool binary for architecture $(uname -m)"; return 1 ;;
+    esac
+
+    case "$tool" in
+        fzf)
+            v="$(github_latest junegunn/fzf 0.60.3)"
+            install_release_binary fzf "https://github.com/junegunn/fzf/releases/download/v${v}/fzf-${v}-linux_${arch_go}.tar.gz"
+            ;;
+        rg)
+            v="$(github_latest BurntSushi/ripgrep 14.1.1)"
+            install_release_binary rg "https://github.com/BurntSushi/ripgrep/releases/download/${v}/ripgrep-${v}-${arch_gnu}-unknown-linux-${libc}.tar.gz"
+            ;;
+        fd)
+            v="$(github_latest sharkdp/fd 10.2.0)"
+            install_release_binary fd "https://github.com/sharkdp/fd/releases/download/v${v}/fd-v${v}-${arch_gnu}-unknown-linux-${libc}.tar.gz"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+install_cli_tools() {
+    log "Installing xclip, fd, fzf, ripgrep..."
+    [ -n "$PM" ] || detect_pm || warn "No supported package manager detected; will use GitHub release binaries where possible"
+
+    # --- 1. package manager -------------------------------------------
+    if [ -n "$PM" ]; then
+        case "$PM" in
+            apt-get)
+                $SUDO apt-get update -y >/dev/null 2>&1 || warn "apt-get update failed (continuing)"
+                ;;
+            dnf|yum)
+                # RHEL/CentOS/Alma/Rocky ship fzf/ripgrep/fd in EPEL; harmless no-op elsewhere
+                $SUDO "$PM" install -y epel-release >/dev/null 2>&1 || true
+                ;;
+        esac
+
+        local tool pkg
+        for tool in xclip fd fzf rg; do
+            command -v "$tool" >/dev/null 2>&1 && continue
+            pkg="$(tool_pkg "$tool")"
+            _pm_install "$pkg" || warn "Package '$pkg' not available via $PM (will try fallback)"
+        done
+    fi
+
+    # --- 2. Debian/Ubuntu install fd as 'fdfind' -----------------------
+    if ! command -v fd >/dev/null 2>&1 && command -v fdfind >/dev/null 2>&1; then
+        $SUDO mkdir -p /usr/local/bin
+        $SUDO ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+        log "Linked fdfind -> /usr/local/bin/fd"
+    fi
+
+    # --- 3. fallback: official release binaries ------------------------
+    local t
+    for t in fzf rg fd; do
+        if ! command -v "$t" >/dev/null 2>&1; then
+            warn "$t still missing; trying GitHub release binary..."
+            install_fallback_binary "$t" || warn "Could not install $t automatically"
+        fi
+    done
+
+    # xclip only exists as a package (needs X11); not fatal on headless boxes
+    if ! command -v xclip >/dev/null 2>&1; then
+        warn "xclip not installed (headless/Wayland systems may not need it; Wayland users: install wl-clipboard)"
+    fi
+
+    log "CLI tools step finished."
 }
 
 #── sesh ─────────────────────────────────────────────────────────
@@ -221,7 +333,7 @@ install_sesh_binary() {
     asset="sesh_${os}_${arch}.tar.gz"
     url="https://github.com/joshmedeski/sesh/releases/latest/download/${asset}"
     log "Downloading $url"
-    if curl -fsSL "$url" -o "$tmpdir/sesh.tar.gz"; then
+    if fetch "$url" "$tmpdir/sesh.tar.gz"; then
         tar -xzf "$tmpdir/sesh.tar.gz" -C "$tmpdir"
         mkdir -p "$HOME/.local/bin"
         mv "$tmpdir/sesh" "$HOME/.local/bin/sesh"
@@ -306,11 +418,12 @@ verify() {
     fi
     echo
     warn "If any binaries show as 'not found' but were just installed, restart your shell or run: source ~/.bashrc"
-    warn "\$HOME/.local/bin may need adding to your PATH for fd/sesh to be picked up."
+    warn "\$HOME/.local/bin (sesh) and /usr/local/bin (fd, fzf, rg fallbacks) must be on your PATH."
     warn "Remember: the tmux config uses xclip. If you're on Wayland, swap the copy-mode-vi 'y' binding to use wl-copy instead."
 }
 
 main() {
+    detect_pm || warn "No known package manager detected; only binary downloads will be attempted"
     pick_downloader
 
     ensure_installed git git
