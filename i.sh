@@ -26,7 +26,7 @@ export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 TMUX_CONF_URL="https://raw.githubusercontent.com/fadedreams/tmux/refs/heads/main/tmux.conf"
 VIMRC_URL="https://raw.githubusercontent.com/fadedreams/vimrc/refs/heads/main/.vimrc"
-BASHRC_URL="https://raw.githubusercontent.com/fadedreams/bashrc/refs/heads/main/.bashrc"
+BASHRC_URL="https://raw.githubusercontent.com/fadedreams/bashrc/refs/heads/main/bashrc"
 
 log()  { printf '\033[1;32m[+] %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*"; }
@@ -128,6 +128,15 @@ backup_if_exists() { # backup_if_exists <path>
     fi
 }
 
+restore_latest_backup() { # restore_latest_backup <path>
+    local latest
+    latest="$(ls -1t "${1}".bak.* 2>/dev/null | head -n1 || true)"
+    if [ -n "$latest" ] && [ ! -f "$1" ]; then
+        cp "$latest" "$1"
+    fi
+    return 0
+}
+
 ensure_installed() { # ensure_installed <bin> <pkg>
     local bin="$1" pkg="$2"
     if command -v "$bin" >/dev/null 2>&1; then
@@ -144,12 +153,24 @@ ensure_installed() { # ensure_installed <bin> <pkg>
     fi
 }
 
+# Download a dotfile to a temp file first; only replace the real one (after a
+# backup) if the download succeeded. A 404 warns instead of aborting the script.
+install_dotfile() { # install_dotfile <url> <dest>
+    local url="$1" dest="$2" tmp
+    tmp="$(mktemp)"
+    if fetch "$url" "$tmp"; then
+        backup_if_exists "$dest"
+        mv "$tmp" "$dest"
+        log "Installed ${dest}"
+    else
+        rm -f "$tmp"
+        warn "Could not download $url; leaving ${dest} untouched"
+    fi
+}
+
 # ---- dotfile installers -------------------------------------------------
 install_tmux_conf() {
-    local dest="${HOME}/.tmux.conf"
-    backup_if_exists "$dest"
-    fetch "${TMUX_CONF_URL}" "$dest"
-    log "Installed ${dest}"
+    install_dotfile "${TMUX_CONF_URL}" "${HOME}/.tmux.conf"
 }
 
 #── tmux plugins (TPM) ───────────────────────────────────────────
@@ -177,17 +198,11 @@ install_tmux_plugins() {
 }
 
 install_vimrc() {
-    local dest="${HOME}/.vimrc"
-    backup_if_exists "$dest"
-    fetch "${VIMRC_URL}" "$dest"
-    log "Installed ${dest}"
+    install_dotfile "${VIMRC_URL}" "${HOME}/.vimrc"
 }
 
 install_bashrc() {
-    local dest="${HOME}/.bashrc"
-    backup_if_exists "$dest"
-    fetch "${BASHRC_URL}" "$dest"
-    log "Installed ${dest}"
+    install_dotfile "${BASHRC_URL}" "${HOME}/.bashrc"
 }
 
 
@@ -395,8 +410,12 @@ install_habamax_colorscheme() {
         return
     fi
     mkdir -p "${HOME}/.vim/colors"
-    fetch "https://raw.githubusercontent.com/vim/colorschemes/master/colors/habamax.vim" "$dest"
-    log "Installed ${dest}"
+    if fetch "https://raw.githubusercontent.com/vim/colorschemes/master/colors/habamax.vim" "$dest"; then
+        log "Installed ${dest}"
+    else
+        rm -f "$dest"
+        warn "Could not download habamax colorscheme (non-fatal)"
+    fi
 }
 
 #── verification ───────────────────────────────────────────────────
@@ -430,13 +449,14 @@ main() {
     ensure_installed tmux tmux
     ensure_installed vim vim
 
+    install_cli_tools
+
     install_tmux_conf
     install_tmux_plugins
     install_vimrc
     install_habamax_colorscheme
     install_bashrc
 
-    install_cli_tools
     install_sesh
     install_nano_shim
     set_default_editor
