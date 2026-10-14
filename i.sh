@@ -26,7 +26,7 @@ export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 TMUX_CONF_URL="https://raw.githubusercontent.com/fadedreams/tmux/refs/heads/main/tmux.conf"
 VIMRC_URL="https://raw.githubusercontent.com/fadedreams/vimrc/refs/heads/main/.vimrc"
-BASHRC_URL="https://raw.githubusercontent.com/fadedreams/bashrc/refs/heads/main/bashrc"
+BASHRC_URL="https://raw.githubusercontent.com/fadedreams/bashrc/refs/heads/main/.bashrc"
 
 log()  { printf '\033[1;32m[+] %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*"; }
