@@ -8,7 +8,9 @@
 #   wget -qO- https://raw.githubusercontent.com/fadedreams/cfg/refs/heads/main/install.sh | bash
 #
 # What it does:
-#   - Installs tmux and vim via the right package manager for your distro
+#   - Refreshes the package index (no upgrades) with the right package manager
+#     (apt, dnf, yum, pacman, zypper, apk)
+#   - Installs tmux and vim
 #   - Downloads .tmux.conf, .vimrc, .bashrc from their respective repos
 #   - Backs up any existing dotfiles to <file>.bak.<timestamp>
 #   - Installs the CLI toolset used by the tmux/vim config: xclip, fzf, fd,
@@ -20,450 +22,310 @@ set -euo pipefail
 # Fully non-interactive apt installs (no debconf prompts, no confirmation)
 export DEBIAN_FRONTEND=noninteractive
 
-# ~/.local/bin holds the sesh binary. Make sure it's on PATH for the rest of
-# this script's run, so `command -v` and verify() actually find it.
+# ~/.local/bin holds fallback binaries (sesh, etc). Make sure it's on PATH for
+# the rest of this script's run, so `command -v` and verify() actually find it.
 export PATH="$HOME/.local/bin:/usr/local/bin:$PATH"
 
 TMUX_CONF_URL="https://raw.githubusercontent.com/fadedreams/tmux/refs/heads/main/tmux.conf"
 VIMRC_URL="https://raw.githubusercontent.com/fadedreams/vimrc/refs/heads/main/.vimrc"
 BASHRC_URL="https://raw.githubusercontent.com/fadedreams/bashrc/refs/heads/main/.bashrc"
 
+TS="$(date +%Y%m%d-%H%M%S)"
+
 log()  { printf '\033[1;32m[+] %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$*"; }
 err()  { printf '\033[1;31m[x] %s\033[0m\n' "$*" >&2; }
 
+have() { command -v "$1" >/dev/null 2>&1; }
+
 # ---- sudo helper ------------------------------------------------------
 SUDO=""
 if [ "$(id -u)" -ne 0 ]; then
-    if command -v sudo >/dev/null 2>&1; then
-        SUDO="sudo"
-    else
-        err "Not running as root and 'sudo' is not available. Please run as root or install sudo."
-        exit 1
-    fi
+  if have sudo; then
+    SUDO="sudo"
+  else
+    err "Not running as root and sudo is not installed. Re-run as root."
+    exit 1
+  fi
 fi
 
-# ---- package manager detection ------------------------------------------
+# ---- downloader -------------------------------------------------------
+# fetch <url> <dest>
+fetch() {
+  if have curl; then
+    curl -fsSL "$1" -o "$2"
+  elif have wget; then
+    wget -qO "$2" "$1"
+  else
+    err "Neither curl nor wget is available."
+    return 1
+  fi
+}
+
+# fetch_stdout <url>
+fetch_stdout() {
+  if have curl; then
+    curl -fsSL "$1"
+  elif have wget; then
+    wget -qO- "$1"
+  else
+    return 1
+  fi
+}
+
+# ---- package manager detection ---------------------------------------
 PM=""
 detect_pm() {
-    local pm
-    for pm in apt-get dnf yum pacman zypper apk xbps-install emerge eopkg nix-env brew; do
-        if command -v "$pm" >/dev/null 2>&1; then
-            PM="$pm"
-            return 0
-        fi
-    done
+  if   have apt-get; then PM="apt"
+  elif have dnf;     then PM="dnf"
+  elif have yum;     then PM="yum"
+  elif have pacman;  then PM="pacman"
+  elif have zypper;  then PM="zypper"
+  elif have apk;     then PM="apk"
+  else
+    err "No supported package manager found (apt, dnf, yum, pacman, zypper, apk)."
+    exit 1
+  fi
+  log "Detected package manager: $PM"
+}
+
+# ---- refresh package index (no upgrades) ------------------------------
+pm_update() {
+  log "Refreshing package index ($PM) — no upgrades..."
+  case "$PM" in
+    apt)
+      $SUDO apt-get update -y
+      ;;
+    dnf)
+      # `dnf check-update` returns exit code 100 when updates exist, so use makecache
+      $SUDO dnf -y makecache
+      ;;
+    yum)
+      $SUDO yum -y makecache
+      ;;
+    pacman)
+      $SUDO pacman -Sy --noconfirm
+      ;;
+    zypper)
+      $SUDO zypper --non-interactive refresh
+      ;;
+    apk)
+      $SUDO apk update
+      ;;
+  esac
+  return 0
+}
+
+# ---- install a single package ----------------------------------------
+# pm_install <pkg> ; returns non-zero if it fails (so callers can fall back)
+pm_install() {
+  case "$PM" in
+    apt)    $SUDO apt-get install -y --no-install-recommends "$@" ;;
+    dnf)    $SUDO dnf install -y "$@" ;;
+    yum)    $SUDO yum install -y "$@" ;;
+    pacman) $SUDO pacman -S --noconfirm --needed "$@" ;;
+    zypper) $SUDO zypper --non-interactive install "$@" ;;
+    apk)    $SUDO apk add "$@" ;;
+  esac
+}
+
+# Map a logical tool name to the distro's package name
+pkg_name() {
+  case "$1" in
+    vim)
+      case "$PM" in
+        dnf|yum) echo "vim-enhanced" ;;
+        *)       echo "vim" ;;
+      esac ;;
+    fd)
+      case "$PM" in
+        apt|dnf|yum) echo "fd-find" ;;
+        *)           echo "fd" ;;
+      esac ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# ---- architecture ----------------------------------------------------
+UNAME_M="$(uname -m)"
+case "$UNAME_M" in
+  x86_64|amd64)  UNAME_M="x86_64";  GOARCH="amd64" ;;
+  aarch64|arm64) UNAME_M="aarch64"; GOARCH="arm64" ;;
+  *)             GOARCH="$UNAME_M" ;;
+esac
+
+# ---- GitHub release fallback -----------------------------------------
+# gh_asset_url <owner/repo> <ERE pattern>
+gh_asset_url() {
+  fetch_stdout "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+    | grep -o '"browser_download_url": *"[^"]*"' \
+    | sed 's/.*: *"//; s/"$//' \
+    | grep -E "$2" \
+    | head -n1
+}
+
+# install_from_release <binary> <owner/repo> <ERE pattern>
+install_from_release() {
+  local bin="$1" repo="$2" pattern="$3" url tmp found
+  log "Falling back to GitHub release for $bin ($repo)..."
+  url="$(gh_asset_url "$repo" "$pattern" || true)"
+  if [ -z "$url" ]; then
+    warn "Could not find a release asset for $bin (arch: $UNAME_M). Skipping."
     return 1
-}
-
-# Install one or more packages with the detected package manager.
-# Returns non-zero on failure (does not exit), so callers can fall back.
-_pm_install() { # _pm_install <pkg>...
-    [ -n "$PM" ] || detect_pm || return 1
-    case "$PM" in
-        apt-get)      $SUDO apt-get install -y "$@" ;;
-        dnf)          $SUDO dnf install -y "$@" ;;
-        yum)          $SUDO yum install -y "$@" ;;
-        pacman)       $SUDO pacman -S --noconfirm --needed "$@" ;;
-        zypper)       $SUDO zypper --non-interactive install "$@" ;;
-        apk)          $SUDO apk add --no-cache "$@" ;;
-        xbps-install) $SUDO xbps-install -y "$@" ;;
-        emerge)       $SUDO emerge --ask=n "$@" ;;
-        eopkg)        $SUDO eopkg install -y "$@" ;;
-        nix-env)      nix-env -iA $(printf 'nixpkgs.%s ' "$@") ;;
-        brew)         brew install "$@" ;;
-        *)            return 1 ;;
-    esac
-}
-
-# Same, but aborts the script on failure (used for essentials like git/tmux/vim)
-install_pkg() { # install_pkg <pkg-name>
-    if ! _pm_install "$@"; then
-        err "Could not install '$*' (package manager: ${PM:-none detected})."
-        exit 1
-    fi
-}
-
-# Map a tool name to the package name used by the current package manager.
-tool_pkg() { # tool_pkg <xclip|fd|fzf|rg>
-    case "$1:$PM" in
-        xclip:emerge)        echo "x11-misc/xclip" ;;
-        fd:apt-get)          echo "fd-find" ;;
-        fd:dnf|fd:yum)       echo "fd-find" ;;
-        fd:emerge)           echo "sys-apps/fd" ;;
-        fzf:emerge)          echo "app-shells/fzf" ;;
-        rg:emerge)           echo "sys-apps/ripgrep" ;;
-        rg:*)                echo "ripgrep" ;;
-        *)                   echo "$1" ;;
-    esac
-}
-
-# ---- downloader helper -------------------------------------------------
-DOWNLOADER=""
-pick_downloader() {
-    if command -v curl >/dev/null 2>&1; then
-        DOWNLOADER="curl"
-    elif command -v wget >/dev/null 2>&1; then
-        DOWNLOADER="wget"
-    else
-        warn "Neither curl nor wget found; attempting to install curl..."
-        install_pkg curl
-        DOWNLOADER="curl"
-    fi
-}
-
-fetch() { # fetch <url> <dest>
-    if [ "$DOWNLOADER" = "curl" ]; then
-        curl -fsSL "$1" -o "$2"
-    else
-        wget -q "$1" -O "$2"
-    fi
-}
-
-backup_if_exists() { # backup_if_exists <path>
-    if [ -f "$1" ]; then
-        local b="${1}.bak.$(date +%Y%m%d%H%M%S)"
-        warn "Existing $1 found. Backing up to $b"
-        cp "$1" "$b"
-    fi
-}
-
-restore_latest_backup() { # restore_latest_backup <path>
-    local latest
-    latest="$(ls -1t "${1}".bak.* 2>/dev/null | head -n1 || true)"
-    if [ -n "$latest" ] && [ ! -f "$1" ]; then
-        cp "$latest" "$1"
-    fi
-    return 0
-}
-
-ensure_installed() { # ensure_installed <bin> <pkg>
-    local bin="$1" pkg="$2"
-    if command -v "$bin" >/dev/null 2>&1; then
-        log "$bin already installed ($($bin --version 2>&1 | head -n1))."
-    else
-        log "Installing $pkg..."
-        install_pkg "$pkg"
-        if command -v "$bin" >/dev/null 2>&1; then
-            log "$pkg installed successfully."
-        else
-            err "$pkg install ran, but '$bin' still isn't on PATH."
-            exit 1
-        fi
-    fi
-}
-
-# Download a dotfile to a temp file first; only replace the real one (after a
-# backup) if the download succeeded. A 404 warns instead of aborting the script.
-install_dotfile() { # install_dotfile <url> <dest>
-    local url="$1" dest="$2" tmp
-    tmp="$(mktemp)"
-    if fetch "$url" "$tmp"; then
-        backup_if_exists "$dest"
-        mv "$tmp" "$dest"
-        log "Installed ${dest}"
-    else
-        rm -f "$tmp"
-        warn "Could not download $url; leaving ${dest} untouched"
-    fi
-}
-
-# ---- dotfile installers -------------------------------------------------
-install_tmux_conf() {
-    install_dotfile "${TMUX_CONF_URL}" "${HOME}/.tmux.conf"
-}
-
-#── tmux plugins (TPM) ───────────────────────────────────────────
-TPM_DIR="${HOME}/.tmux/plugins/tpm"
-install_tpm() {
-    if [ -d "$TPM_DIR" ]; then
-        log "TPM already installed, updating..."
-        git -C "$TPM_DIR" pull --ff-only >/dev/null 2>&1 || warn "Could not update TPM (non-fatal)"
-    else
-        log "Installing TPM (tmux plugin manager)..."
-        git clone --depth 1 https://github.com/tmux-plugins/tpm "$TPM_DIR"
-    fi
-}
-install_tmux_plugins() {
-    install_tpm
-
-    # TPM ships a headless installer script that doesn't need a running
-    # tmux session or the prefix+I keypress — perfect for a bootstrap script.
-    if [ -x "${TPM_DIR}/bin/install_plugins" ]; then
-        log "Installing tmux plugins listed in ~/.tmux.conf..."
-        "${TPM_DIR}/bin/install_plugins" || warn "Some tmux plugins may have failed to install"
-    else
-        err "TPM install script not found at ${TPM_DIR}/bin/install_plugins"
-    fi
-}
-
-install_vimrc() {
-    install_dotfile "${VIMRC_URL}" "${HOME}/.vimrc"
-}
-
-install_bashrc() {
-    install_dotfile "${BASHRC_URL}" "${HOME}/.bashrc"
-}
-
-
-#── FZF & Friends ────────────────────────────────────────────────
-#
-# Strategy for xclip, fd, fzf, ripgrep (each handled independently so one
-# missing package never blocks the others):
-#   1. Install from the distro's package manager (apt, dnf, yum, pacman,
-#      zypper, apk, xbps, emerge, eopkg, nix, brew)
-#   2. Fix up Debian/Ubuntu's `fdfind` -> `fd` naming
-#   3. For anything still missing (old/minimal distros, RHEL without EPEL,
-#      unknown package managers), download the official GitHub release binary
-
-# Prints the latest release version of a GitHub repo (without a leading "v"),
-# or the given fallback version if the API is unreachable / rate-limited.
-github_latest() { # github_latest <owner/repo> <fallback>
-    local v="" tmp
-    tmp="$(mktemp)"
-    if fetch "https://api.github.com/repos/$1/releases/latest" "$tmp" 2>/dev/null; then
-        v="$(grep -m1 '"tag_name"' "$tmp" | sed -E 's/.*"v?([^"]+)".*/\1/' || true)"
-    fi
-    rm -f "$tmp"
-    echo "${v:-$2}"
-}
-
-# Download a .tar.gz, find <bin> inside it, and install to /usr/local/bin
-install_release_binary() { # install_release_binary <bin> <url>
-    local bin="$1" url="$2" tmp found
-    tmp="$(mktemp -d)"
-    log "Downloading $url"
-    if fetch "$url" "$tmp/a.tar.gz" && tar -xzf "$tmp/a.tar.gz" -C "$tmp"; then
-        found="$(find "$tmp" -type f -name "$bin" | head -n1)"
-        if [ -n "$found" ]; then
-            $SUDO mkdir -p /usr/local/bin
-            $SUDO install -m 0755 "$found" "/usr/local/bin/$bin"
-            rm -rf "$tmp"
-            log "$bin installed to /usr/local/bin/$bin"
-            return 0
-        fi
-    fi
+  fi
+  tmp="$(mktemp -d)"
+  if ! fetch "$url" "$tmp/asset.tar.gz"; then
+    warn "Download failed for $bin."
     rm -rf "$tmp"
     return 1
+  fi
+  tar -xzf "$tmp/asset.tar.gz" -C "$tmp" 2>/dev/null || {
+    warn "Could not extract archive for $bin."
+    rm -rf "$tmp"
+    return 1
+  }
+  found="$(find "$tmp" -type f -name "$bin" | head -n1)"
+  if [ -z "$found" ]; then
+    warn "Binary '$bin' not found inside the archive."
+    rm -rf "$tmp"
+    return 1
+  fi
+  mkdir -p "$HOME/.local/bin"
+  install -m 0755 "$found" "$HOME/.local/bin/$bin"
+  rm -rf "$tmp"
+  log "Installed $bin to ~/.local/bin/$bin"
 }
 
-# Fallback installers: GitHub release binaries (Linux x86_64 / arm64)
-install_fallback_binary() { # install_fallback_binary <fzf|rg|fd>
-    local tool="$1" arch_gnu arch_go libc v
-    case "$(uname -m)" in
-        x86_64|amd64)  arch_gnu="x86_64";  arch_go="amd64"; libc="musl" ;;
-        aarch64|arm64) arch_gnu="aarch64"; arch_go="arm64"; libc="gnu"  ;;
-        *) warn "No prebuilt $tool binary for architecture $(uname -m)"; return 1 ;;
-    esac
-
-    case "$tool" in
-        fzf)
-            v="$(github_latest junegunn/fzf 0.60.3)"
-            install_release_binary fzf "https://github.com/junegunn/fzf/releases/download/v${v}/fzf-${v}-linux_${arch_go}.tar.gz"
-            ;;
-        rg)
-            v="$(github_latest BurntSushi/ripgrep 14.1.1)"
-            install_release_binary rg "https://github.com/BurntSushi/ripgrep/releases/download/${v}/ripgrep-${v}-${arch_gnu}-unknown-linux-${libc}.tar.gz"
-            ;;
-        fd)
-            v="$(github_latest sharkdp/fd 10.2.0)"
-            install_release_binary fd "https://github.com/sharkdp/fd/releases/download/v${v}/fd-v${v}-${arch_gnu}-unknown-linux-${libc}.tar.gz"
-            ;;
-        *) return 1 ;;
-    esac
+# ---- tool installers -------------------------------------------------
+install_base() {
+  # curl is needed for the release fallbacks; tar/gzip for extraction
+  for t in curl tar gzip; do
+    have "$t" || pm_install "$t" || warn "Could not install $t"
+  done
+  for t in tmux vim; do
+    if have "$t"; then
+      log "$t already installed"
+    else
+      log "Installing $t..."
+      pm_install "$(pkg_name "$t")" || err "Failed to install $t"
+    fi
+  done
 }
 
-install_cli_tools() {
-    log "Installing xclip, fd, fzf, ripgrep..."
-    [ -n "$PM" ] || detect_pm || warn "No supported package manager detected; will use GitHub release binaries where possible"
-
-    # --- 1. package manager -------------------------------------------
-    if [ -n "$PM" ]; then
-        case "$PM" in
-            apt-get)
-                $SUDO apt-get update -y >/dev/null 2>&1 || warn "apt-get update failed (continuing)"
-                ;;
-            dnf|yum)
-                # RHEL/CentOS/Alma/Rocky ship fzf/ripgrep/fd in EPEL; harmless no-op elsewhere
-                $SUDO "$PM" install -y epel-release >/dev/null 2>&1 || true
-                ;;
-        esac
-
-        local tool pkg
-        for tool in xclip fd fzf rg; do
-            command -v "$tool" >/dev/null 2>&1 && continue
-            pkg="$(tool_pkg "$tool")"
-            _pm_install "$pkg" || warn "Package '$pkg' not available via $PM (will try fallback)"
-        done
-    fi
-
-    # --- 2. Debian/Ubuntu install fd as 'fdfind' -----------------------
-    if ! command -v fd >/dev/null 2>&1 && command -v fdfind >/dev/null 2>&1; then
-        $SUDO mkdir -p /usr/local/bin
-        $SUDO ln -sf "$(command -v fdfind)" /usr/local/bin/fd
-        log "Linked fdfind -> /usr/local/bin/fd"
-    fi
-
-    # --- 3. fallback: official release binaries ------------------------
-    local t
-    for t in fzf rg fd; do
-        if ! command -v "$t" >/dev/null 2>&1; then
-            warn "$t still missing; trying GitHub release binary..."
-            install_fallback_binary "$t" || warn "Could not install $t automatically"
-        fi
-    done
-
-    # xclip only exists as a package (needs X11); not fatal on headless boxes
-    if ! command -v xclip >/dev/null 2>&1; then
-        warn "xclip not installed (headless/Wayland systems may not need it; Wayland users: install wl-clipboard)"
-    fi
-
-    log "CLI tools step finished."
+install_xclip() {
+  if have xclip; then log "xclip already installed"; return; fi
+  log "Installing xclip..."
+  pm_install xclip || warn "xclip not available; clipboard integration may not work"
 }
 
-#── sesh ─────────────────────────────────────────────────────────
+install_fzf() {
+  if have fzf; then log "fzf already installed"; return; fi
+  log "Installing fzf..."
+  pm_install fzf && return 0
+  install_from_release fzf "junegunn/fzf" "linux_${GOARCH}\.tar\.gz$" || true
+}
+
+install_fd() {
+  if have fd; then log "fd already installed"; return; fi
+  if have fdfind; then
+    log "fd-find already installed, linking fdfind -> fd"
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$(command -v fdfind)" "$HOME/.local/bin/fd"
+    return
+  fi
+  log "Installing fd..."
+  if pm_install "$(pkg_name fd)"; then
+    # Debian/Ubuntu ship the binary as `fdfind`
+    if ! have fd && have fdfind; then
+      mkdir -p "$HOME/.local/bin"
+      ln -sf "$(command -v fdfind)" "$HOME/.local/bin/fd"
+    fi
+    return 0
+  fi
+  install_from_release fd "sharkdp/fd" "${UNAME_M}-unknown-linux-(musl|gnu)\.tar\.gz$" || true
+}
+
+install_ripgrep() {
+  if have rg; then log "ripgrep already installed"; return; fi
+  log "Installing ripgrep..."
+  pm_install ripgrep && return 0
+  install_from_release rg "BurntSushi/ripgrep" "${UNAME_M}-unknown-linux-(musl|gnu)\.tar\.gz$" || true
+}
 
 install_sesh() {
-    if command -v sesh >/dev/null 2>&1; then
-        log "sesh already installed"
-        return
-    fi
-    install_sesh_binary
+  if have sesh; then log "sesh already installed"; return; fi
+  install_from_release sesh "joshmedeski/sesh" "[Ll]inux_(${UNAME_M}|${GOARCH})\.tar\.gz$" || true
 }
 
-install_sesh_binary() {
-    local os arch url tmpdir asset
-    case "$(uname -s)" in
-        Darwin) os="Darwin" ;;
-        Linux)  os="Linux" ;;
-        *) err "Unsupported OS for sesh binary install: $(uname -s)"; return 1 ;;
-    esac
-    case "$(uname -m)" in
-        x86_64|amd64)  arch="x86_64" ;;
-        aarch64|arm64) arch="arm64" ;;
-        *) err "Unsupported architecture for sesh binary install: $(uname -m)"; return 1 ;;
-    esac
-
-    tmpdir="$(mktemp -d)"
-    asset="sesh_${os}_${arch}.tar.gz"
-    url="https://github.com/joshmedeski/sesh/releases/latest/download/${asset}"
-    log "Downloading $url"
-    if fetch "$url" "$tmpdir/sesh.tar.gz"; then
-        tar -xzf "$tmpdir/sesh.tar.gz" -C "$tmpdir"
-        mkdir -p "$HOME/.local/bin"
-        mv "$tmpdir/sesh" "$HOME/.local/bin/sesh"
-        chmod +x "$HOME/.local/bin/sesh"
-        log "sesh installed to \$HOME/.local/bin/sesh"
-    else
-        err "Could not download sesh binary automatically."
-        err "Grab it manually from https://github.com/joshmedeski/sesh/releases"
+# ---- dotfiles --------------------------------------------------------
+# install_dotfile <url> <dest>
+install_dotfile() {
+  local url="$1" dest="$2" tmp
+  tmp="$(mktemp)"
+  if ! fetch "$url" "$tmp"; then
+    err "Failed to download $url"
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ -f "$dest" ]; then
+    if cmp -s "$tmp" "$dest"; then
+      log "$dest is already up to date"
+      rm -f "$tmp"
+      return 0
     fi
-    rm -rf "$tmpdir"
-}
-#── nano shim ────────────────────────────────────────────────────
-
-# Replace 'nano' with a thin wrapper that just execs vi
-install_nano_shim() {
-    log "Installing /usr/local/bin/nano shim (exec vi)..."
-    $SUDO bash -c 'cat << '"'"'EOF'"'"' > /usr/local/bin/nano
-#!/bin/bash
-exec vi "$@"
-EOF
-chmod +x /usr/local/bin/nano'
-    log "Installed /usr/local/bin/nano -> vi"
+    cp -p "$dest" "$dest.bak.$TS"
+    warn "Backed up existing $dest -> $dest.bak.$TS"
+  fi
+  mv "$tmp" "$dest"
+  chmod 644 "$dest"
+  log "Installed $dest"
 }
 
-#── default editor ────────────────────────────────────────────────
-set_default_editor() {
-    if command -v update-alternatives >/dev/null 2>&1; then
-        # Debian/Ubuntu: package may register vim as vim.basic, vim.tiny, or plain vim
-        local vim_alt
-        vim_alt="$(update-alternatives --list editor 2>/dev/null | grep -E '/vim(\.basic|\.tiny)?$' | head -n1)"
-        if [ -n "$vim_alt" ]; then
-            $SUDO update-alternatives --set editor "$vim_alt"
-            log "Set default editor to $vim_alt (update-alternatives)"
-        else
-            warn "No vim alternative registered for 'editor'; skipping update-alternatives"
-        fi
-    elif command -v alternatives >/dev/null 2>&1; then
-        # RHEL/Fedora/CentOS use 'alternatives' instead of 'update-alternatives'
-        local vim_bin
-        vim_bin="$(command -v vim || true)"
-        if [ -n "$vim_bin" ] && alternatives --list 2>/dev/null | grep -q '^editor'; then
-            $SUDO alternatives --set editor "$vim_bin"
-            log "Set default editor to $vim_bin (alternatives)"
-        else
-            warn "No 'editor' alternative found via alternatives; skipping"
-        fi
-    else
-        # Arch, Alpine, and others have no alternatives system for 'editor'
-        warn "No alternatives system found for this distro; not setting a system-wide editor"
-        warn "Relying on EDITOR/VISUAL in ~/.bashrc instead"
-    fi
-}
-
-#── vim colorscheme ─────────────────────────────────────────────
-install_habamax_colorscheme() {
-    local dest="${HOME}/.vim/colors/habamax.vim"
-    if [ -f "$dest" ]; then
-        log "habamax colorscheme already installed"
-        return
-    fi
-    mkdir -p "${HOME}/.vim/colors"
-    if fetch "https://raw.githubusercontent.com/vim/colorschemes/master/colors/habamax.vim" "$dest"; then
-        log "Installed ${dest}"
-    else
-        rm -f "$dest"
-        warn "Could not download habamax colorscheme (non-fatal)"
-    fi
-}
-
-#── verification ───────────────────────────────────────────────────
-
+# ---- verify ----------------------------------------------------------
 verify() {
-    echo
-    log "Verification:"
-    for bin in tmux vim xclip fzf fd rg sesh; do
-        if command -v "$bin" >/dev/null 2>&1; then
-            printf '  \033[1;32m✓\033[0m %-8s %s\n' "$bin" "$(command -v "$bin")"
-        else
-            printf '  \033[1;31m✗\033[0m %-8s not found\n' "$bin"
-        fi
-    done
-    if [ -f "${HOME}/.vim/colors/habamax.vim" ]; then
-        printf '  \033[1;32m✓\033[0m %-8s %s\n' "habamax" "${HOME}/.vim/colors/habamax.vim"
+  log "Verifying installation..."
+  local missing=0
+  for t in tmux vim xclip fzf fd rg sesh; do
+    if have "$t"; then
+      printf '  \033[1;32mok\033[0m   %s -> %s\n' "$t" "$(command -v "$t")"
     else
-        printf '  \033[1;31m✗\033[0m %-8s not found\n' "habamax"
+      printf '  \033[1;31mmiss\033[0m %s\n' "$t"
+      missing=1
     fi
-    echo
-    warn "If any binaries show as 'not found' but were just installed, restart your shell or run: source ~/.bashrc"
-    warn "\$HOME/.local/bin (sesh) and /usr/local/bin (fd, fzf, rg fallbacks) must be on your PATH."
-    warn "Remember: the tmux config uses xclip. If you're on Wayland, swap the copy-mode-vi 'y' binding to use wl-copy instead."
+  done
+  for f in "$HOME/.tmux.conf" "$HOME/.vimrc" "$HOME/.bashrc"; do
+    if [ -f "$f" ]; then
+      printf '  \033[1;32mok\033[0m   %s\n' "$f"
+    else
+      printf '  \033[1;31mmiss\033[0m %s\n' "$f"
+      missing=1
+    fi
+  done
+  if [ "$missing" -eq 1 ]; then
+    warn "Some items are missing (see above)."
+  else
+    log "Everything is in place."
+  fi
 }
 
+# ---- main ------------------------------------------------------------
 main() {
-    detect_pm || warn "No known package manager detected; only binary downloads will be attempted"
-    pick_downloader
+  detect_pm
+  pm_update
+  install_base
+  install_xclip
+  install_fzf
+  install_fd
+  install_ripgrep
+  install_sesh
 
-    ensure_installed git git
-    ensure_installed tmux tmux
-    ensure_installed vim vim
+  install_dotfile "$TMUX_CONF_URL" "$HOME/.tmux.conf"
+  install_dotfile "$VIMRC_URL"     "$HOME/.vimrc"
+  install_dotfile "$BASHRC_URL"    "$HOME/.bashrc"
 
-    install_cli_tools
+  verify
 
-    install_tmux_conf
-    install_tmux_plugins
-    install_vimrc
-    install_habamax_colorscheme
-    install_bashrc
-
-    install_sesh
-    install_nano_shim
-    set_default_editor
-
-    verify
-
-    log "Done."
-    log "Start a new shell (or run: exec bash) and 'tmux' to pick everything up."
+  log "Done. Run 'source ~/.bashrc' or open a new shell, then start tmux."
 }
+
 main "$@"
