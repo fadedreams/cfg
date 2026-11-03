@@ -281,11 +281,73 @@ install_dotfile() {
   log "Installed $dest"
 }
 
+# ---- optional shell extras (ble.sh / starship) ------------------------
+# Only wires up what is actually installed. Must run AFTER the .bashrc
+# dotfile is installed, since that step overwrites ~/.bashrc.
+configure_shell_extras() {
+  local rc="$HOME/.bashrc" tmp
+  local blesh="$HOME/.local/share/blesh/ble.sh"
+  local has_ble=0 has_starship=0
+
+  [ -f "$blesh" ] && has_ble=1
+  have starship && has_starship=1
+
+  if [ "$has_ble" -eq 0 ] && [ "$has_starship" -eq 0 ]; then
+    log "Neither ble.sh nor starship installed; leaving .bashrc as is"
+    return 0
+  fi
+  [ -f "$rc" ] || { warn "$rc not found; skipping shell extras"; return 0; }
+
+  # 1) ble.sh loader goes at the TOP (with --noattach)
+  if [ "$has_ble" -eq 1 ] && ! grep -q '# >>> blesh-load >>>' "$rc"; then
+    tmp="$(mktemp)"
+    {
+      cat <<'EOF'
+# >>> blesh-load >>>
+[[ $- == *i* && -f ~/.local/share/blesh/ble.sh ]] && source ~/.local/share/blesh/ble.sh --noattach
+# <<< blesh-load <<<
+
+EOF
+      cat "$rc"
+    } > "$tmp"
+    mv "$tmp" "$rc"
+    chmod 644 "$rc"
+    log "Added ble.sh loader to top of $rc"
+  fi
+
+  # 2) starship init goes at the BOTTOM
+  if [ "$has_starship" -eq 1 ] && ! grep -q 'starship init bash' "$rc"; then
+    cat >> "$rc" <<'EOF'
+
+# >>> starship >>>
+export PATH="$HOME/.local/bin:$PATH"
+eval "$(starship init bash)"
+# <<< starship <<<
+EOF
+    log "Added starship init to $rc"
+  fi
+
+  # 3) ble-attach must be the very LAST thing (after starship)
+  if [ "$has_ble" -eq 1 ] && ! grep -q '# >>> blesh-attach >>>' "$rc"; then
+    cat >> "$rc" <<'EOF'
+
+# >>> blesh-attach >>>
+[[ ${BLE_VERSION-} ]] && ble-attach
+# <<< blesh-attach <<<
+EOF
+    log "Added ble-attach to end of $rc"
+  fi
+
+  if [ "$has_starship" -eq 1 ] && [ ! -f "$HOME/.config/starship.toml" ]; then
+    warn "starship is installed but ~/.config/starship.toml is missing (default prompt will be used)"
+  fi
+}
+
 # ---- verify ----------------------------------------------------------
 verify() {
   log "Verifying installation..."
   local missing=0
-  for t in tmux vim xclip fzf fd rg sesh; do
+  for t in tmux vim xclip fzf fd rg sesh starship; do
     if have "$t"; then
       printf '  \033[1;32mok\033[0m   %s -> %s\n' "$t" "$(command -v "$t")"
     else
@@ -322,6 +384,8 @@ main() {
   install_dotfile "$TMUX_CONF_URL" "$HOME/.tmux.conf"
   install_dotfile "$VIMRC_URL"     "$HOME/.vimrc"
   install_dotfile "$BASHRC_URL"    "$HOME/.bashrc"
+
+  configure_shell_extras
 
   verify
 
