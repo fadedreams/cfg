@@ -10,12 +10,13 @@
 # What it does:
 #   - Installs tmux and vim with the right package manager
 #     (apt, dnf, yum, pacman, zypper, apk). No index refresh, no upgrades.
-#   - Uninstalls the real nano package and installs a /usr/local/bin/nano
-#     wrapper that launches vi instead
+#   - Installs a /usr/local/bin/nano wrapper so typing `nano` launches vi
+#     (the real nano package is left installed, just shadowed)
 #   - Downloads .tmux.conf, .vimrc, .bashrc from their respective repos
 #   - Backs up any existing dotfiles to <file>.bak.<timestamp>
 #   - Installs the CLI toolset used by the tmux/vim config: xclip, fzf, fd,
-#     ripgrep and sesh (package manager first, GitHub release binary as fallback)
+#     ripgrep, sesh and starship (package manager first, GitHub release
+#     binary as fallback), then wires starship into ~/.bashrc
 #   - Safe to re-run (idempotent)
 
 set -euo pipefail
@@ -74,30 +75,6 @@ pkg_install() {
     zypper) $SUDO zypper --non-interactive install "$@" </dev/null ;;
     apk)    $SUDO apk add "$@" </dev/null ;;
     *)      return 1 ;;
-  esac
-}
-
-pkg_remove() {
-  case "$PM" in
-    apt)    $SUDO apt-get remove -y "$@" </dev/null ;;
-    dnf)    $SUDO dnf remove -y "$@" </dev/null ;;
-    yum)    $SUDO yum remove -y "$@" </dev/null ;;
-    pacman) $SUDO pacman -Rns --noconfirm "$@" </dev/null ;;
-    zypper) $SUDO zypper --non-interactive remove "$@" </dev/null ;;
-    apk)    $SUDO apk del "$@" </dev/null ;;
-    *)      return 1 ;;
-  esac
-}
-
-# Is the real nano package installed? (checks the package DB, not PATH,
-# because the wrapper makes `command -v nano` always succeed)
-nano_pkg_installed() {
-  case "$PM" in
-    apt)             dpkg -s nano >/dev/null 2>&1 ;;
-    dnf|yum|zypper)  rpm -q nano >/dev/null 2>&1 ;;
-    pacman)          pacman -Qi nano >/dev/null 2>&1 ;;
-    apk)             apk info -e nano >/dev/null 2>&1 ;;
-    *)               return 1 ;;
   esac
 }
 
@@ -210,7 +187,7 @@ install_dotfile() {  # install_dotfile <url> <dest>
 # ---------------------------------------------------------------------------
 # nano -> vi wrapper
 #   /usr/local/bin precedes /usr/bin in PATH on all major distros, so this
-#   shadows the real nano. The real package is removed as well.
+#   shadows the real nano (the real package is left untouched).
 # ---------------------------------------------------------------------------
 install_nano_wrapper() {
   local dest="/usr/local/bin/nano" tmp
@@ -233,14 +210,6 @@ EOF
     warn "Could not write $dest (need root?)"
   fi
   rm -f "$tmp"
-
-  # Always remove the real nano package (the wrapper above replaces it)
-  if nano_pkg_installed; then
-    log "Removing real nano package..."
-    pkg_remove nano || warn "Could not remove nano package"
-  else
-    log "Real nano package not installed; nothing to remove"
-  fi
 
   hash -r 2>/dev/null || true
 }
@@ -272,7 +241,7 @@ install_dotfile "$VIMRC_URL"     "$HOME/.vimrc"
 install_dotfile "$BASHRC_URL"    "$HOME/.bashrc"
 
 # ---------------------------------------------------------------------------
-# 3. CLI toolset: xclip, fzf, fd, ripgrep, sesh
+# 3. CLI toolset: xclip, fzf, fd, ripgrep, sesh, starship
 # ---------------------------------------------------------------------------
 log "Installing CLI toolset..."
 
@@ -346,13 +315,46 @@ else
   fi
 fi
 
+# starship (package manager first, then GitHub release binary)
+if have starship; then
+  log "starship already installed"
+else
+  if ! pkg_install starship; then
+    warn "Package install of starship failed; trying GitHub release..."
+    if [ -n "$ARCH_RUST" ]; then
+      gh_install "starship/starship" "${ARCH_RUST}-unknown-linux-musl\.tar\.gz$" "starship" \
+        || warn "Could not install starship"
+    fi
+  fi
+fi
+
+# Wire starship into ~/.bashrc. Must come AFTER the .bashrc dotfile step,
+# since that step replaces ~/.bashrc. Idempotent.
+if have starship; then
+  if [ -f "$HOME/.bashrc" ] && ! grep -q 'starship init bash' "$HOME/.bashrc"; then
+    cat >> "$HOME/.bashrc" <<'EOF'
+
+# >>> starship >>>
+export PATH="$HOME/.local/bin:$PATH"
+eval "$(starship init bash)"
+# <<< starship <<<
+EOF
+    log "Added starship init to ~/.bashrc"
+  else
+    log "starship init already present in ~/.bashrc (or no ~/.bashrc)"
+  fi
+  if [ ! -f "$HOME/.config/starship.toml" ]; then
+    warn "starship.toml not found at ~/.config/starship.toml (default prompt will be used)"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Verify
 # ---------------------------------------------------------------------------
 verify() {
   log "Verification:"
   local t
-  for t in tmux vim xclip fzf fd rg sesh; do
+  for t in tmux vim xclip fzf fd rg sesh starship; do
     if have "$t"; then
       printf '    \033[1;32m✓\033[0m %-6s %s\n' "$t" "$(command -v "$t")"
     else
@@ -372,4 +374,3 @@ case ":$PATH:" in
   *":$HOME/.local/bin:"*) : ;;
   *) warn "Add ~/.local/bin to your PATH if it isn't already (your .bashrc may handle this)." ;;
 esac
-
