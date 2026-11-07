@@ -16,7 +16,8 @@
 #   - Downloads .tmux.conf, .vimrc, .bashrc from their respective repos
 #   - Backs up any existing dotfiles to <file>.bak.<timestamp>
 #   - Installs the CLI toolset used by the tmux/vim config: xclip, fzf, fd,
-#     ripgrep and sesh (package manager first, GitHub release binary as fallback)
+#     ripgrep, sesh and starship (package manager first, GitHub release
+#     binary as fallback), then wires starship into ~/.bashrc
 #   - Safe to re-run (idempotent)
 
 set -euo pipefail
@@ -319,6 +320,13 @@ install_sesh() {
   install_from_release sesh "joshmedeski/sesh" "[Ll]inux_(${UNAME_M}|${GOARCH})\.tar\.gz$" || true
 }
 
+install_starship() {
+  if have starship; then log "starship already installed"; return; fi
+  log "Installing starship..."
+  pm_install starship && return 0
+  install_from_release starship "starship/starship" "${UNAME_M}-unknown-linux-musl\.tar\.gz$" || true
+}
+
 # ---- dotfiles --------------------------------------------------------
 # install_dotfile <url> <dest>
 install_dotfile() {
@@ -449,6 +457,7 @@ main() {
   install_fd
   install_ripgrep
   install_sesh
+  install_starship
 
   install_dotfile "$TMUX_CONF_URL" "$HOME/.tmux.conf"
   install_dotfile "$VIMRC_URL"     "$HOME/.vimrc"
