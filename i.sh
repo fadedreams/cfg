@@ -11,6 +11,8 @@
 #   - Refreshes the package index (no upgrades) with the right package manager
 #     (apt, dnf, yum, pacman, zypper, apk)
 #   - Installs tmux and vim
+#   - Uninstalls the real nano package and installs a /usr/local/bin/nano
+#     wrapper that launches vi instead
 #   - Downloads .tmux.conf, .vimrc, .bashrc from their respective repos
 #   - Backs up any existing dotfiles to <file>.bak.<timestamp>
 #   - Installs the CLI toolset used by the tmux/vim config: xclip, fzf, fd,
@@ -129,6 +131,30 @@ pm_install() {
   esac
 }
 
+# ---- remove a package (used to uninstall the real nano) ---------------
+pm_remove() {
+  case "$PM" in
+    apt)    $SUDO apt-get remove -y "$@" ;;
+    dnf)    $SUDO dnf remove -y "$@" ;;
+    yum)    $SUDO yum remove -y "$@" ;;
+    pacman) $SUDO pacman -Rns --noconfirm "$@" ;;
+    zypper) $SUDO zypper --non-interactive remove "$@" ;;
+    apk)    $SUDO apk del "$@" ;;
+  esac
+}
+
+# Is the real nano package installed? (checks the package DB, not PATH,
+# because the wrapper makes `command -v nano` always succeed)
+nano_pkg_installed() {
+  case "$PM" in
+    apt)             dpkg -s nano >/dev/null 2>&1 ;;
+    dnf|yum|zypper)  rpm -q nano >/dev/null 2>&1 ;;
+    pacman)          pacman -Qi nano >/dev/null 2>&1 ;;
+    apk)             apk info -e nano >/dev/null 2>&1 ;;
+    *)               return 1 ;;
+  esac
+}
+
 # Map a logical tool name to the distro's package name
 pkg_name() {
   case "$1" in
@@ -210,6 +236,42 @@ install_base() {
       pm_install "$(pkg_name "$t")" || err "Failed to install $t"
     fi
   done
+}
+
+# ---- nano -> vi wrapper ----------------------------------------------
+# /usr/local/bin precedes /usr/bin in PATH on all major distros, so this
+# shadows the real nano without touching the package.
+install_nano_wrapper() {
+  local dest="/usr/local/bin/nano" tmp
+  tmp="$(mktemp)"
+  cat > "$tmp" <<'EOF'
+#!/bin/sh
+# nano -> vi wrapper (installed by install.sh)
+if command -v vi >/dev/null 2>&1; then
+  exec vi "$@"
+else
+  exec vim "$@"
+fi
+EOF
+
+  if [ -f "$dest" ] && cmp -s "$tmp" "$dest"; then
+    log "nano wrapper already up to date"
+  else
+    $SUDO mkdir -p /usr/local/bin
+    $SUDO install -m 0755 "$tmp" "$dest"
+    log "Installed $dest -> vi"
+  fi
+  rm -f "$tmp"
+
+  # Always remove the real nano package (the wrapper above replaces it)
+  if nano_pkg_installed; then
+    log "Removing real nano package..."
+    pm_remove nano || warn "Could not remove nano package"
+  else
+    log "Real nano package not installed; nothing to remove"
+  fi
+
+  hash -r 2>/dev/null || true
 }
 
 install_xclip() {
@@ -355,6 +417,12 @@ verify() {
       missing=1
     fi
   done
+  if [ -x /usr/local/bin/nano ]; then
+    printf '  \033[1;32mok\033[0m   nano -> %s (wrapper to vi)\n' "$(command -v nano)"
+  else
+    printf '  \033[1;31mmiss\033[0m nano wrapper\n'
+    missing=1
+  fi
   for f in "$HOME/.tmux.conf" "$HOME/.vimrc" "$HOME/.bashrc"; do
     if [ -f "$f" ]; then
       printf '  \033[1;32mok\033[0m   %s\n' "$f"
@@ -375,6 +443,7 @@ main() {
   detect_pm
   pm_update
   install_base
+  install_nano_wrapper
   install_xclip
   install_fzf
   install_fd
