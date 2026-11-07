@@ -372,3 +372,4 @@ case ":$PATH:" in
   *":$HOME/.local/bin:"*) : ;;
   *) warn "Add ~/.local/bin to your PATH if it isn't already (your .bashrc may handle this)." ;;
 esac
+
